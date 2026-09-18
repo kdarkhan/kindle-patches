@@ -76,10 +76,38 @@ local function openDashboard()
     end
 end
 
--- Opens QuickRSS's article list the same way its own main-menu entry does.
--- QuickRSS's koplugin directory is on package.path once plugins finish
--- loading, so this require resolves fine from here too.
+-- Finds a QuickRSS feed-list or article-reader widget already sitting
+-- somewhere in the window stack (e.g. buried under the dashboard), by
+-- comparing each widget's metatable to the class itself -- that's how
+-- koreader's Widget:new() sets instances up, so this reliably identifies
+-- instances regardless of how deep in the stack they are.
+local function findBuriedQuickRSSWidget()
+    local ok1, FeedView = pcall(require, "modules/ui/feed_view")
+    local ok2, ArticleReader = pcall(require, "modules/ui/article_reader")
+    local stack = UIManager._window_stack
+    for i = #stack, 1, -1 do
+        local mt = getmetatable(stack[i].widget)
+        if (ok1 and mt == FeedView) or (ok2 and mt == ArticleReader) then
+            return stack[i].widget
+        end
+    end
+end
+
+-- Opens QuickRSS's article list the same way its own main-menu entry does
+-- -- or, if a feed list/article reader is already open but buried under
+-- something else, surfaces it instead of stacking a redundant new one.
 local function openQuickRSS()
+    local existing = findBuriedQuickRSSWidget()
+    if existing then
+        local stack = UIManager._window_stack
+        local guard = 0
+        while stack[#stack] and stack[#stack].widget ~= existing and guard < 50 do
+            closeWidget(stack[#stack].widget)
+            guard = guard + 1
+        end
+        return
+    end
+
     local ok, FeedView = pcall(require, "modules/ui/feed_view")
     if ok and FeedView then
         UIManager:show(FeedView:new{})
