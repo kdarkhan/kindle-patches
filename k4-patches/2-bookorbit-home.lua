@@ -17,22 +17,6 @@ local CLICK_TIMEOUT = 0.4
 local click_count = 0
 local timer_scheduled = false
 
-local function openDashboard()
-    UIManager:broadcastEvent(Event:new("BookOrbitOpenDashboard"))
-end
-
--- Opens QuickRSS's article list the same way its own main-menu entry does.
--- QuickRSS's koplugin directory is on package.path once plugins finish
--- loading, so this require resolves fine from here too.
-local function openQuickRSS()
-    local ok, FeedView = pcall(require, "modules/ui/feed_view")
-    if ok and FeedView then
-        UIManager:show(FeedView:new{})
-    else
-        require("logger").warn("bookorbit-home: could not open QuickRSS:", FeedView)
-    end
-end
-
 -- Closes a widget the same "proper" way its own Back/close button would:
 -- Menu-based widgets (BookOrbit's dashboard, etc.) via onCloseAllMenus, so
 -- close_callback runs even if the user had navigated into a subfolder and
@@ -46,6 +30,61 @@ local function closeWidget(widget)
         widget:onClose()
     else
         UIManager:close(widget)
+    end
+end
+
+local function findHost()
+    local ok_ru, ReaderUI = pcall(require, "apps/reader/readerui")
+    if ok_ru and ReaderUI.instance then
+        return ReaderUI.instance
+    end
+    local ok_fm, FileManager = pcall(require, "apps/filemanager/filemanager")
+    if ok_fm and FileManager.instance then
+        return FileManager.instance
+    end
+end
+
+local function isInWindowStack(widget)
+    local stack = UIManager._window_stack
+    for i = 1, #stack do
+        if stack[i].widget == widget then
+            return true
+        end
+    end
+    return false
+end
+
+-- Opens the BookOrbit dashboard -- or, if it's already open but buried
+-- under something else (e.g. QuickRSS was opened via double-click without
+-- closing the dashboard first), surfaces it instead. BookOrbit's own
+-- openCatalogBrowser() silently no-ops when it's already open, so without
+-- this a click while it's buried would appear to do nothing at all.
+local function openDashboard()
+    local host = findHost()
+    local bookorbit = host and host.bookorbit
+    local dashboard = bookorbit and bookorbit.catalog_browser
+
+    if dashboard and isInWindowStack(dashboard) then
+        local stack = UIManager._window_stack
+        local guard = 0
+        while stack[#stack] and stack[#stack].widget ~= dashboard and guard < 50 do
+            closeWidget(stack[#stack].widget)
+            guard = guard + 1
+        end
+    else
+        UIManager:broadcastEvent(Event:new("BookOrbitOpenDashboard"))
+    end
+end
+
+-- Opens QuickRSS's article list the same way its own main-menu entry does.
+-- QuickRSS's koplugin directory is on package.path once plugins finish
+-- loading, so this require resolves fine from here too.
+local function openQuickRSS()
+    local ok, FeedView = pcall(require, "modules/ui/feed_view")
+    if ok and FeedView then
+        UIManager:show(FeedView:new{})
+    else
+        require("logger").warn("bookorbit-home: could not open QuickRSS:", FeedView)
     end
 end
 
