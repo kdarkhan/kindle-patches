@@ -1,6 +1,7 @@
 local Device = require("device")
 local UIManager = require("ui/uimanager")
 local Event = require("ui/event")
+local Screen = Device.screen
 
 local EV_KEY = 1
 local KEY_DOWN = 1
@@ -44,6 +45,63 @@ local function findHost()
     end
 end
 
+-- Remembers whatever rotation a book was actually being read in immediately
+-- before we last forced Portrait, so a since-corrupted save can be
+-- repaired -- see the ReaderView overrides below.
+local saved_rotation_mode = nil
+
+-- Forces the screen back to unrotated Portrait. None of our three Home
+-- targets (dashboard, QuickRSS, file browser) are rotation-aware, so a book
+-- left open in a rotated mode would otherwise leak that rotation into them.
+-- This relies on "Keep current rotation across views" (Screen -> Rotation)
+-- being off: with it off, each book restores its own saved rotation on
+-- open regardless of whatever we leave the screen at here, and the file
+-- browser resets to its own default (portrait) rotation on its own.
+local function resetRotation()
+    local current = Screen:getRotationMode()
+    if current ~= Screen.DEVICE_ROTATED_UPRIGHT then
+        saved_rotation_mode = current
+        Screen:setRotationMode(Screen.DEVICE_ROTATED_UPRIGHT)
+    end
+end
+
+-- ReaderView:onSaveSettings() (fired on close, on suspend, and on periodic
+-- autosave) always does `document.configurable.rotation_mode =
+-- Screen:getRotationMode()` -- it trusts the *live screen* to reflect the
+-- book's rotation. Since resetRotation() above can force the screen to
+-- Portrait while a book is still open behind BookOrbit/QuickRSS (or right
+-- before closing it for the file browser), a save landing at the wrong
+-- moment would silently overwrite the book's real rotation with Portrait.
+-- Repair it immediately after the original handler runs -- ReaderView is
+-- registered before ReaderConfig in ReaderUI:init(), so this always lands
+-- before ReaderConfig:onSaveSettings persists the value to disk.
+--
+-- The repair is dropped (see the two overrides below) the moment either a
+-- genuinely new rotation is set for this book, or a different document is
+-- opened, so it never fights a real, deliberate rotation change.
+local ok_rv, ReaderView = pcall(require, "apps/reader/modules/readerview")
+if ok_rv and ReaderView then
+    local orig_onSaveSettings = ReaderView.onSaveSettings
+    ReaderView.onSaveSettings = function(self, ...)
+        orig_onSaveSettings(self, ...)
+        if saved_rotation_mode then
+            self.document.configurable.rotation_mode = saved_rotation_mode
+        end
+    end
+
+    local orig_onSetRotationMode = ReaderView.onSetRotationMode
+    ReaderView.onSetRotationMode = function(self, mode)
+        saved_rotation_mode = nil
+        return orig_onSetRotationMode(self, mode)
+    end
+
+    local orig_onReadSettings = ReaderView.onReadSettings
+    ReaderView.onReadSettings = function(self, config)
+        saved_rotation_mode = nil
+        return orig_onReadSettings(self, config)
+    end
+end
+
 local function isInWindowStack(widget)
     local stack = UIManager._window_stack
     for i = 1, #stack do
@@ -60,6 +118,7 @@ end
 -- openCatalogBrowser() silently no-ops when it's already open, so without
 -- this a click while it's buried would appear to do nothing at all.
 local function openDashboard()
+    resetRotation()
     local host = findHost()
     local bookorbit = host and host.bookorbit
     local dashboard = bookorbit and bookorbit.catalog_browser
@@ -81,6 +140,7 @@ end
 -- duplicate on top of it. Falls back to constructing the feed list
 -- directly if a not-yet-updated QuickRSS build doesn't have show() yet.
 local function openQuickRSS()
+    resetRotation()
     local ok, FeedView = pcall(require, "modules/ui/feed_view")
     if not ok or not FeedView then
         require("logger").warn("bookorbit-home: could not open QuickRSS:", FeedView)
@@ -98,6 +158,8 @@ end
 -- the user's configured home folder (Filebrowser settings -> Home folder),
 -- regardless of what got us here.
 local function forceOpenHomeFileBrowser()
+    resetRotation()
+
     -- Close a currently open book properly first (flushes reading position
     -- and settings) rather than yanking it out from under itself.
     local ok_ru, ReaderUI = pcall(require, "apps/reader/readerui")
