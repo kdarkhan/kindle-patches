@@ -186,26 +186,41 @@ end
 -- bug) can never hang key input.
 local MAX_SKIP_HOPS = 25
 
-local origGetAdjacentWordRolling = ReaderKeySelection._getAdjacentWordRolling
+local orig_moveIndicatorCreDoc = ReaderKeySelection._moveIndicatorCreDoc
 
-function ReaderKeySelection:_getAdjacentWordRolling(word, direction, lock_line_center_y, lock_line_tolerance)
-    local candidate = origGetAdjacentWordRolling(self, word, direction, lock_line_center_y, lock_line_tolerance)
+local function wordKey(word)
+    return word and word.word and word.word:lower():gsub("^[^%a']+", ""):gsub("[^%a']+$", "")
+end
 
-    -- Don't skip while extending an existing multi-word highlight -- the
-    -- user may deliberately want "the" or "a" included in the selection.
-    if self.ui.highlight and self.ui.highlight.select_mode then
-        return candidate
+-- Single interception point for horizontal word movement in rolling docs.
+-- `no_wrap_horizontal` is only ever true for a Keyboard+Left/Right quick
+-- move (see the real _moveIndicatorCreDoc), so it doubles as a free
+-- "quick move" flag -- no key bindings or other functions need touching.
+function ReaderKeySelection:_moveIndicatorCreDoc(current_word, dx, dy, steps, no_wrap_horizontal, preferred_center_x)
+    if dx == 0 or (self.ui.highlight and self.ui.highlight.select_mode) then
+        -- Vertical move, or extending an existing highlight: untouched.
+        return orig_moveIndicatorCreDoc(self, current_word, dx, dy, steps, no_wrap_horizontal, preferred_center_x)
     end
 
-    local hops = 0
-    while candidate and candidate.word and hops < MAX_SKIP_HOPS do
-        local key = candidate.word:lower():gsub("^[^%a']+", ""):gsub("[^%a']+$", "")
-        if not SKIP_WORDS[key] then
-            break
+    if no_wrap_horizontal then
+        -- Keyboard+Left/Right: a single, unfiltered real-word step instead
+        -- of the native ~4-word quick-move jump.
+        return orig_moveIndicatorCreDoc(self, current_word, dx, dy, 1, false, preferred_center_x)
+    end
+
+    -- Plain Left/Right: take single real-word steps, skipping past common
+    -- words, until landing on one worth a look (or hitting a wall).
+    local moved_at_all = false
+    for _ = 1, MAX_SKIP_HOPS do
+        local moved = orig_moveIndicatorCreDoc(self, current_word, dx, dy, 1, false, preferred_center_x)
+        if not moved then
+            return moved_at_all
         end
-        hops = hops + 1
-        candidate = origGetAdjacentWordRolling(self, candidate, direction, lock_line_center_y, lock_line_tolerance)
+        moved_at_all = true
+        current_word = self._previous_indicator_word
+        if not SKIP_WORDS[wordKey(current_word)] then
+            return true
+        end
     end
-
-    return candidate
+    return moved_at_all
 end
